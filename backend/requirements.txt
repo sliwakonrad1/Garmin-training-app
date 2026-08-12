@@ -3,3 +3,4 @@ uvicorn
 pandas
 groq
 python-dotenv
+requests
