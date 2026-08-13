@@ -16,7 +16,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { fetchActivities, fetchActivityTypes, type DashboardFilters } from "@/lib/api";
+import {
+  fetchActivities,
+  fetchActivityBreakdown,
+  fetchActivityGroups,
+  type DashboardFilters,
+} from "@/lib/api";
 import type { RelativeUnit } from "@/lib/time-range";
 import { formatActivityLabel, formatDistance, formatPace, getActivityColor } from "@/lib/utils";
 
@@ -74,9 +79,13 @@ function Activities() {
     queryKey: ["activities", ...queryScope],
     queryFn: () => fetchActivities(filters),
   });
-  const activityTypes = useQuery({
-    queryKey: ["activity_types"],
-    queryFn: fetchActivityTypes,
+  const activityGroups = useQuery({
+    queryKey: ["activity_groups"],
+    queryFn: fetchActivityGroups,
+  });
+  const activityBreakdown = useQuery({
+    queryKey: ["activity_breakdown", ...queryScope],
+    queryFn: () => fetchActivityBreakdown(filters),
   });
   const rows = data ?? [];
   const hasActiveFilters = Boolean(filters.activityType || filters.startDate || filters.endDate);
@@ -119,7 +128,7 @@ function Activities() {
       </Card>
 
       <div className="flex flex-wrap gap-2">
-        {["all", ...(activityTypes.data ?? [])].map((type) => {
+        {["all", ...(activityGroups.data ?? []).map(({ group }) => group)].map((type) => {
           const color = type === "all" ? undefined : getActivityColor(type);
           const selected = activityType === type;
           return (
@@ -144,6 +153,50 @@ function Activities() {
           );
         })}
       </div>
+
+      {activityType !== "all" ? (
+        <div className="flex flex-wrap gap-2">
+          {(activityGroups.data ?? [])
+            .find(({ group }) => group === activityType)
+            ?.activity_types.filter((type) => type !== activityType)
+            .map((type) => (
+              <Button
+                key={type}
+                size="sm"
+                variant="outline"
+                className="rounded-full"
+                onClick={() => setActivityType(type)}
+              >
+                {formatActivityLabel(type)}
+              </Button>
+            ))}
+        </div>
+      ) : null}
+
+      {activityType === "all" && activityBreakdown.data?.length ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          {activityBreakdown.data.map((group) => (
+            <Button
+              key={group.activity_group}
+              variant="outline"
+              className="h-auto justify-start p-4 text-left"
+              onClick={() => setActivityType(group.activity_group)}
+            >
+              <span>
+                <span className="block font-medium">
+                  {formatActivityLabel(group.activity_group)}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {group.sessions} sessions · {formatDistance(group.total_km)}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {group.total_hours.toFixed(1)} h · load {group.total_load.toFixed(0)}
+                </span>
+              </span>
+            </Button>
+          ))}
+        </div>
+      ) : null}
 
       <Card className="border-border/60 bg-card">
         <CardContent className="p-0">

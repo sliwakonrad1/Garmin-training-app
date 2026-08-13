@@ -34,7 +34,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  fetchActivityTypes,
+  fetchActivityGroups,
   fetchCardiacDrift,
   fetchEfficiencyScatter,
   fetchEfficiencyTrend,
@@ -324,9 +324,9 @@ function Dashboard() {
     filters.endDate ?? "all",
   ];
 
-  const activityTypes = useQuery({
-    queryKey: ["activity_types"],
-    queryFn: fetchActivityTypes,
+  const activityGroups = useQuery({
+    queryKey: ["activity_groups"],
+    queryFn: fetchActivityGroups,
   });
   const summary = useQuery({
     queryKey: ["summary", ...queryScope],
@@ -471,11 +471,18 @@ function Dashboard() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All activities</SelectItem>
-                {(activityTypes.data ?? []).map((type) => (
-                  <SelectItem key={type} value={type}>
-                    {formatActivityLabel(type)}
-                  </SelectItem>
-                ))}
+                {(activityGroups.data ?? []).flatMap(({ group, activity_types }) => [
+                  <SelectItem key={group} value={group}>
+                    {formatActivityLabel(group)}
+                  </SelectItem>,
+                  ...activity_types
+                    .filter((type) => type !== group)
+                    .map((type) => (
+                      <SelectItem key={type} value={type}>
+                        &nbsp;&nbsp;{formatActivityLabel(type)}
+                      </SelectItem>
+                    )),
+                ])}
               </SelectContent>
             </Select>
           </div>

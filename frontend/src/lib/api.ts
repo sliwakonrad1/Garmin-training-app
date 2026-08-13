@@ -6,6 +6,16 @@ export type Summary = {
   hours: number;
   calories: number;
   vo2max: number;
+  activity_groups: ActivityGroupStatistic[];
+};
+export type ActivityGroup = { group: string; activity_types: string[] };
+export type ActivityGroupStatistic = {
+  activity_group: string;
+  sessions: number;
+  total_km: number;
+  total_hours: number;
+  total_calories: number;
+  total_load: number;
 };
 
 export type WeeklyPoint = {
@@ -110,6 +120,9 @@ export const fetchCardiacDrift = (filters?: DashboardFilters) =>
 export const fetchHrDistribution = (filters?: DashboardFilters) =>
   getJson<HrDistributionPoint[]>("/api/hr_distribution", filters);
 export const fetchActivityTypes = () => getJson<string[]>("/api/activity_types");
+export const fetchActivityGroups = () => getJson<ActivityGroup[]>("/api/activity_groups");
+export const fetchActivityBreakdown = (filters?: DashboardFilters) =>
+  getJson<ActivityGroupStatistic[]>("/api/activity_breakdown", filters);
 export const fetchActivities = (filters?: DashboardFilters) =>
   getJson<Activity[]>("/api/activities", filters);
 
