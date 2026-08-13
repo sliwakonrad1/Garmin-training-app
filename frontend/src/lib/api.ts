@@ -33,6 +33,7 @@ export type EfficiencyScatterPoint = {
   distance_km: number;
   avg_hr: number;
   elevation_gain: number;
+  elevation_per_100m: number;
   temperature: number;
   duration_minutes: number;
   pace_min_per_km: number;

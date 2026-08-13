@@ -188,6 +188,7 @@ function EfficiencyTooltip({
       </p>
       <p>
         Elevation gain: {formatNumberDynamic(point.elevation_gain, { maximumFractionDigits: 0 })} m
+        ({formatNumberDynamic(point.elevation_per_100m, { maximumFractionDigits: 1 })} m / 100 m)
       </p>
     </div>
   );
@@ -231,12 +232,12 @@ function EfficiencyScatterTooltip({
   );
 }
 
-type ScatterMetric = "distance_km" | "temperature" | "elevation_gain";
+type ScatterMetric = "distance_km" | "temperature" | "elevation_per_100m";
 
 const scatterConfig: Record<ScatterMetric, { label: string; unit: string }> = {
   distance_km: { label: "Distance", unit: "km" },
   temperature: { label: "Temperature", unit: "°C" },
-  elevation_gain: { label: "Elevation", unit: "m" },
+  elevation_per_100m: { label: "Elevation gain", unit: "m / 100 m" },
 };
 
 function interpolateGreen(date: string, oldestDate: string, newestDate: string) {
@@ -711,7 +712,7 @@ function Dashboard() {
             <TabsList>
               <TabsTrigger value="distance_km">Distance</TabsTrigger>
               <TabsTrigger value="temperature">Temperature</TabsTrigger>
-              <TabsTrigger value="elevation_gain">Elevation</TabsTrigger>
+              <TabsTrigger value="elevation_per_100m">Elevation</TabsTrigger>
             </TabsList>
           </Tabs>
         </CardHeader>
