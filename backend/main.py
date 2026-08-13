@@ -75,6 +75,10 @@ def normalize_activity_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "duration_minutes": 0,
         "avg_hr": 0,
         "max_hr": 0,
+        "avg_speed_kmh": 0,
+        "elevation_gain_m": 0,
+        "min_temp_c": None,
+        "max_temp_c": None,
         "calories": 0,
         "training_load": 0,
         "vo2max": 0,
@@ -113,6 +117,7 @@ def get_df(force_refresh=False):
         df["calories"]         = pd.to_numeric(df["calories"], errors="coerce").fillna(0)
         df["training_load"]    = pd.to_numeric(df["training_load"], errors="coerce").fillna(0)
         df["vo2max"]           = pd.to_numeric(df["vo2max"], errors="coerce").fillna(0)
+        df["activity_group"] = df["activity_type"].apply(get_parent_type)
         weekly_df["week"]                = pd.to_datetime(weekly_df["week"], errors="coerce")
         weekly_df["total_training_load"] = pd.to_numeric(weekly_df["total_training_load"], errors="coerce").fillna(0)
         weekly_df["total_distance_km"]   = pd.to_numeric(weekly_df["total_distance_km"], errors="coerce").fillna(0)
@@ -403,21 +408,125 @@ def refresh_data():
     return {"status": "refreshed", "activities_loaded": len(df)}
 
 @app.get("/api/efficiency_trend")
-def get_efficiency_trend(weeks: int = 8):
+def get_efficiency_trend(
+    weeks: int = None,
+    granularity: str = "activity",
+    start_date: str = None,
+    end_date: str = None,
+    activity_type: str = None,
+):
+    """
+    granularity = 'activity' → one point per run (recommended)
+    granularity = 'week' → weekly average
+    """
     df, _ = get_df()
     now = pd.Timestamp.now()
-    running = df[
-        (df["activity_type"] == "running") &
-        (df["start_time_local"] >= now - pd.Timedelta(weeks=weeks)) &
-        (df["distance_km"] >= 5) &
-        (df["avg_hr"] > 0)
+
+    running = filter_dataset(df, "start_time_local", start_date, end_date, activity_type)
+    if weeks is not None and start_date is None and end_date is None:
+        running = running[running["start_time_local"] >= now - pd.Timedelta(weeks=weeks)]
+    running = running[
+        (running["activity_type"] == "running") &
+        (running["distance_km"] >= 3) &
+        (running["avg_hr"] > 0) &
+        (running["avg_speed_kmh"] > 0)
     ].copy()
+
     if running.empty:
         return []
-    running["efficiency"] = (running["avg_speed_kmh"] / running["avg_hr"] * 1000).round(2)
-    running["date"] = running["start_time_local"].dt.strftime("%Y-%m-%d")
-    return running[["date", "efficiency", "avg_speed_kmh", "avg_hr", "distance_km"]].fillna(0).to_dict(orient="records")
 
+    # Core efficiency metric
+    running["efficiency"] = (running["avg_speed_kmh"] / running["avg_hr"] * 1000).round(2)
+
+    # Normalized factors for scatter
+    running["date"]          = running["start_time_local"].dt.strftime("%Y-%m-%d")
+    running["distance_km"]   = running["distance_km"].round(1)
+    running["elevation_gain"]= running["elevation_gain_m"].fillna(0).round(0)
+    running["temperature"]   = running["min_temp_c"].fillna(
+                                running["max_temp_c"]).fillna(20).round(1)
+    running["activity_name"] = running["activity_name"].fillna("Run")
+
+    if granularity == "week":
+        running["week"] = running["start_time_local"].dt.to_period("W").dt.start_time.dt.strftime("%Y-%m-%d")
+        result = running.groupby("week").agg(
+            efficiency=("efficiency", "mean"),
+            distance_km=("distance_km", "sum"),
+            avg_hr=("avg_hr", "mean"),
+            elevation_gain=("elevation_gain", "sum"),
+            temperature=("temperature", "mean"),
+            sessions=("activity_id", "count")
+        ).reset_index().rename(columns={"week": "date"})
+        result["efficiency"] = result["efficiency"].round(2)
+        return result.to_dict(orient="records")
+
+    # Default — one point per activity
+    cols = ["date", "activity_name", "efficiency", "distance_km",
+            "avg_hr", "elevation_gain", "temperature",
+            "duration_minutes", "pace_min_per_km"]
+    available = [c for c in cols if c in running.columns]
+    return running[available].sort_values("date").fillna(0).to_dict(orient="records")
+
+@app.get("/api/cardiac_drift")
+def get_cardiac_drift(
+    weeks: int = None,
+    start_date: str = None,
+    end_date: str = None,
+    activity_type: str = None,
+):
+    """Cardiac drift trend for long runs — tracks aerobic endurance."""
+    df, _ = get_df()
+    now = pd.Timestamp.now()
+    long_runs = filter_dataset(df, "start_time_local", start_date, end_date, activity_type)
+    if weeks is not None and start_date is None and end_date is None:
+        long_runs = long_runs[long_runs["start_time_local"] >= now - pd.Timedelta(weeks=weeks)]
+    long_runs = long_runs[
+        (long_runs["activity_type"] == "running") &
+        (long_runs["duration_minutes"] >= 30) &
+        (long_runs["avg_hr"] > 0)
+    ].copy()
+    if long_runs.empty:
+        return []
+    long_runs["hr_drift_pct"] = ((long_runs["max_hr"] - long_runs["avg_hr"]) / long_runs["avg_hr"] * 100).round(1)
+    long_runs["date"] = long_runs["start_time_local"].dt.strftime("%Y-%m-%d")
+    return long_runs.sort_values("start_time_local")[
+        ["date", "hr_drift_pct", "avg_hr", "max_hr", "duration_minutes", "distance_km"]
+    ].fillna(0).to_dict(orient="records")
+
+@app.get("/api/efficiency_scatter")
+def get_efficiency_scatter(
+    start_date: str = None,
+    end_date: str = None,
+    activity_type: str = None,
+):
+    """
+    Scatter data: efficiency vs distance, temperature, elevation.
+    Used for multi-factor analysis chart.
+    """
+    df, _ = get_df()
+
+    running = filter_dataset(df, "start_time_local", start_date, end_date, activity_type)
+    running = running[
+        (running["activity_type"] == "running") &
+        (running["distance_km"] >= 3) &
+        (running["avg_hr"] > 0) &
+        (running["avg_speed_kmh"] > 0)
+    ].copy()
+
+    if running.empty:
+        return []
+
+    running["efficiency"]    = (running["avg_speed_kmh"] / running["avg_hr"] * 1000).round(2)
+    running["date"]          = running["start_time_local"].dt.strftime("%Y-%m-%d")
+    running["temperature"]   = running["min_temp_c"].fillna(running["max_temp_c"]).fillna(20).round(1)
+    running["elevation_gain"]= running["elevation_gain_m"].fillna(0).round(0)
+    running["activity_name"] = running["activity_name"].fillna("Run")
+
+    cols = ["date", "activity_name", "efficiency",
+            "distance_km", "avg_hr", "elevation_gain",
+            "temperature", "duration_minutes", "pace_min_per_km",
+            "avg_speed_kmh"]
+    available = [c for c in cols if c in running.columns]
+    return running[available].sort_values("date").fillna(0).to_dict(orient="records")
 
 @app.post("/api/chat")
 def chat(message: dict):
@@ -542,3 +651,24 @@ def chat(message: dict):
 
     except Exception as e:
         return {"response": "AI coach unavailable: " + str(e)}
+
+# Activity type grouping — parent → children
+ACTIVITY_GROUPS = {
+    "running": ["running", "trail_running", "treadmill_running", "track_running"],
+    "cycling": ["cycling", "road_biking", "indoor_cycling", "mountain_biking",
+                "gravel_cycling", "virtual_ride", "bike"],
+    "strength": ["strength_training", "gym", "fitness_equipment", "weight_training"],
+    "hiking": ["hiking", "walking", "mountaineering"],
+    "swimming": ["swimming", "open_water_swimming", "pool_swimming"],
+    "other": []  # catch-all
+}
+
+def get_parent_type(activity_type: str) -> str:
+    """Maps specific activity type to parent group."""
+    if not activity_type:
+        return "other"
+    at = str(activity_type).lower()
+    for parent, children in ACTIVITY_GROUPS.items():
+        if at in children or at == parent:
+            return parent
+    return activity_type  # keep original if no match

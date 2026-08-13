@@ -450,6 +450,43 @@ def get_personal_bests():
         result["peak_vo2max"] = round(float(vo2_data["vo2max"].max()), 1)
     return result
 
+def get_cardiac_drift_trend(weeks=8):
+    """Returns cardiac drift trend for long runs over last N weeks."""
+    df, _ = load_data()
+    now = pd.Timestamp.now()
+
+    long_runs = df[
+        (df["activity_type"] == "running") &
+        (df["start_time_local"] >= now - pd.Timedelta(weeks=weeks)) &
+        (df["duration_minutes"] >= 30) &
+        (df["avg_hr"] > 0)
+    ].copy()
+
+    if long_runs.empty:
+        return {"message": "No long runs found in this period"}
+
+    long_runs["hr_drift"] = (
+        (long_runs["max_hr"] - long_runs["avg_hr"]) /
+        long_runs["avg_hr"] * 100
+    ).round(1)
+
+    long_runs["date"] = long_runs["start_time_local"].dt.strftime("%Y-%m-%d")
+
+    recent_avg = round(float(long_runs["hr_drift"].tail(5).mean()), 1)
+    older_avg  = round(float(long_runs["hr_drift"].head(5).mean()), 1)
+    trend = "improving" if recent_avg < older_avg else "declining" if recent_avg > older_avg else "stable"
+
+    return {
+        "drift_trend": trend,
+        "recent_avg_drift_pct": recent_avg,
+        "older_avg_drift_pct": older_avg,
+        "interpretation": (
+            "Lower drift = better aerobic endurance. "
+            "Under 5% is excellent, 5-8% is good, above 8% means aerobic base needs work."
+        ),
+        "sessions": long_runs[["date", "hr_drift", "avg_hr", "max_hr", "duration_minutes", "distance_km"]]
+                    .fillna(0).to_dict(orient="records")
+    }
 
 # Tool registry — maps tool names to functions and descriptions
 TOOLS = {
@@ -493,6 +530,10 @@ TOOLS = {
         "fn": get_personal_bests,
         "description": "Use for: personal bests, records, longest run, fastest pace, peak performances"
     },
+    "get_cardiac_drift_trend": {
+    "fn": get_cardiac_drift_trend,
+    "description": "Use when asked about cardiac drift, aerobic decoupling, endurance, long run quality"
+},
 }
 
 
