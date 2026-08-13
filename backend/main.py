@@ -402,6 +402,22 @@ def refresh_data():
     df, _ = get_df()
     return {"status": "refreshed", "activities_loaded": len(df)}
 
+@app.get("/api/efficiency_trend")
+def get_efficiency_trend(weeks: int = 8):
+    df, _ = get_df()
+    now = pd.Timestamp.now()
+    running = df[
+        (df["activity_type"] == "running") &
+        (df["start_time_local"] >= now - pd.Timedelta(weeks=weeks)) &
+        (df["distance_km"] >= 5) &
+        (df["avg_hr"] > 0)
+    ].copy()
+    if running.empty:
+        return []
+    running["efficiency"] = (running["avg_speed_kmh"] / running["avg_hr"] * 1000).round(2)
+    running["date"] = running["start_time_local"].dt.strftime("%Y-%m-%d")
+    return running[["date", "efficiency", "avg_speed_kmh", "avg_hr", "distance_km"]].fillna(0).to_dict(orient="records")
+
 
 @app.post("/api/chat")
 def chat(message: dict):
