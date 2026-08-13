@@ -51,6 +51,77 @@ class AiCoachDataTests(unittest.TestCase):
         self.assertEqual(result[0]["elevation_gain"], 250.0)
         self.assertEqual(result[0]["elevation_per_100m"], 2.5)
 
+    def test_efficiency_charts_prefer_weather_temperature_columns(self):
+        activities = pd.DataFrame(
+            {
+                "activity_id": [1],
+                "activity_name": ["Warm run"],
+                "activity_type": ["running"],
+                "start_time_local": pd.to_datetime(["2026-08-05"]),
+                "distance_km": [10.0],
+                "avg_hr": [140.0],
+                "avg_speed_kmh": [12.0],
+                "weather_temp_mean": [23.4],
+                "min_temp_c": [4.0],
+                "max_temp_c": [5.0],
+            }
+        )
+
+        with patch("main.get_df", return_value=(activities, pd.DataFrame())):
+            trend = main.get_efficiency_trend()
+            scatter = main.get_efficiency_scatter()
+
+        self.assertEqual(trend[0]["temperature"], 23.4)
+        self.assertEqual(scatter[0]["temperature"], 23.4)
+
+    def test_activity_group_filter_includes_all_running_variants(self):
+        activities = main.normalize_activity_dataframe(
+            pd.DataFrame(
+                {
+                    "activity_id": [1, 2, 3],
+                    "activity_type": ["running", "trail_running", "cycling"],
+                    "start_time_local": pd.to_datetime(["2026-08-01", "2026-08-02", "2026-08-03"]),
+                    "distance_km": [5.0, 10.0, 20.0],
+                }
+            )
+        )
+
+        with patch("main.get_df", return_value=(activities, pd.DataFrame())):
+            result = main.get_summary(activity_type="running")
+
+        self.assertEqual(result["sessions"], 2)
+        self.assertEqual(result["total_km"], 15.0)
+
+    def test_coach_criteria_filters_aggregate_type_location_and_period(self):
+        activities = pd.DataFrame(
+            {
+                "activity_id": [1, 2, 3],
+                "activity_type": ["trail_running", "running", "cycling"],
+                "activity_name": ["Alpine trail", "City run", "Alpine ride"],
+                "location_name": ["Alps", "City", "Alps"],
+                "start_time_local": pd.to_datetime(["2026-06-10", "2026-06-11", "2026-06-12"]),
+                "distance_km": [12.0, 8.0, 50.0],
+                "duration_minutes": [90.0, 40.0, 180.0],
+                "avg_hr": [140.0, 145.0, 130.0],
+                "max_hr": [160.0, 165.0, 155.0],
+                "calories": [800, 500, 1200],
+                "training_load": [100.0, 60.0, 150.0],
+                "vo2max": [50.0, 50.0, 50.0],
+            }
+        )
+        mcp_tools.configure_data_loader(lambda force_refresh=False: (activities, pd.DataFrame()))
+
+        result = mcp_tools.get_activities_by_criteria(
+            "How much trail running did I do in the Alps in June 2026?",
+            start_date="2026-06-01",
+            end_date="2026-06-30",
+        )
+
+        self.assertEqual(result["total_sessions"], 1)
+        self.assertEqual(result["matched_activity_groups"], ["running"])
+        self.assertEqual(result["matched_locations"], ["Alps"])
+        self.assertEqual(result["total_km"], 12.0)
+
     def test_date_range_tool_uses_configured_backend_loader(self):
         activities = pd.DataFrame(
             {

@@ -8,8 +8,22 @@ import re
 from dotenv import load_dotenv
 try:
     from .mcp_tools import TOOLS, configure_data_loader, select_tool
+    from .activity_types import (
+        ACTIVITY_GROUPS,
+        activity_group_statistics,
+        activity_type_mask,
+        available_activity_groups,
+        get_parent_type,
+    )
 except ImportError:
     from mcp_tools import TOOLS, configure_data_loader, select_tool
+    from activity_types import (
+        ACTIVITY_GROUPS,
+        activity_group_statistics,
+        activity_type_mask,
+        available_activity_groups,
+        get_parent_type,
+    )
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BACKEND_DIR, ".env"))
@@ -57,6 +71,7 @@ def normalize_activity_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "vO2MaxValue": "vo2max",
         "activityTrainingLoad": "training_load",
         "elevationGain": "elevation_gain_m",
+        "locationName": "location_name",
     }
     for source, target in alias_map.items():
         if target not in result.columns and source in result.columns:
@@ -90,6 +105,29 @@ def normalize_activity_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def get_temperature_series(dataframe: pd.DataFrame) -> pd.Series:
+    """Return the best available Celsius temperature for each activity."""
+    temperature = pd.Series(float("nan"), index=dataframe.index, dtype="float64")
+    for column in (
+        "temperature_c",
+        "weather_temp_mean",
+        "temp_mean_c",
+        "weather_temp_min",
+        "temp_min_c",
+        "min_temp_c",
+        "weather_temp_max",
+        "temp_max_c",
+        "max_temp_c",
+        "minTemperature",
+        "maxTemperature",
+    ):
+        if column in dataframe.columns:
+            temperature = temperature.fillna(
+                pd.to_numeric(dataframe[column], errors="coerce")
+            )
+    return temperature
+
+
 def get_df(force_refresh=False):
     import datetime
     now = datetime.datetime.now()
@@ -119,16 +157,7 @@ def get_df(force_refresh=False):
         df["training_load"]    = pd.to_numeric(df["training_load"], errors="coerce").fillna(0)
         df["vo2max"]           = pd.to_numeric(df["vo2max"], errors="coerce").fillna(0)
         df["elevation_gain_m"] = pd.to_numeric(df["elevation_gain_m"], errors="coerce").fillna(0)
-        if "weather_temp_mean" in df.columns:
-            df["temperature_c"] = pd.to_numeric(
-                df.get("temperature_c", pd.Series([None] * len(df))), errors="coerce"
-            ).fillna(pd.to_numeric(df["weather_temp_mean"], errors="coerce"))
-        elif "weather_temp_max" in df.columns:
-            df["temperature_c"] = pd.to_numeric(df["weather_temp_max"], errors="coerce")
-        else:
-            df["temperature_c"] = pd.to_numeric(
-                df.get("maxTemperature", pd.Series([None] * len(df))), errors="coerce"
-            )
+        df["temperature_c"] = get_temperature_series(df)
 
         if "weather_wind_kmh" in df.columns:
             df["wind_kmh"] = pd.to_numeric(df["weather_wind_kmh"], errors="coerce")
@@ -170,7 +199,7 @@ def filter_dataset(dataframe, date_column, start_date=None, end_date=None, activ
     if end is not None:
         result = result[result[date_column] < end + pd.Timedelta(days=1)]
     if activity_type and activity_type.lower() != "all":
-        result = result[result["activity_type"] == activity_type]
+        result = result[activity_type_mask(result, activity_type)]
     return result
 
 
@@ -298,6 +327,8 @@ def parse_explicit_date_range(text: str):
 def infer_tool_kwargs(tool_name: str, user_message: str):
     if tool_name == "get_activities_by_date_range":
         return parse_explicit_date_range(user_message) or {}
+    if tool_name == "get_activities_by_criteria":
+        return {"query": user_message, **(parse_explicit_date_range(user_message) or {})}
     if tool_name == "get_last_n_days":
         days = parse_relative_days(user_message)
         if days:
@@ -332,6 +363,7 @@ def get_summary(start_date: str = None, end_date: str = None, activity_type: str
         "total_calories": int(filtered["calories"].sum()),
         "vo2max":         avg_vo2,
         "avg_vo2max":     avg_vo2,
+        "activity_groups": activity_group_statistics(filtered),
     }
 
 
@@ -384,6 +416,23 @@ def get_weekly(start_date: str = None, end_date: str = None, activity_type: str 
 def get_activity_types():
     df, _ = get_df()
     return sorted(df["activity_type"].dropna().unique().tolist())
+
+
+@app.get("/api/activity_groups")
+def get_activity_groups():
+    df, _ = get_df()
+    return available_activity_groups(df["activity_type"].dropna().unique())
+
+
+@app.get("/api/activity_breakdown")
+def get_activity_breakdown(
+    start_date: str = None,
+    end_date: str = None,
+    activity_type: str = None,
+):
+    df, _ = get_df()
+    filtered = filter_dataset(df, "start_time_local", start_date, end_date, activity_type)
+    return activity_group_statistics(filtered)
 
 
 @app.get("/api/vo2max_trend")
@@ -460,8 +509,7 @@ def get_efficiency_trend(
     running["date"]          = running["start_time_local"].dt.strftime("%Y-%m-%d")
     running["distance_km"]   = running["distance_km"].round(1)
     running["elevation_gain"]= running["elevation_gain_m"].fillna(0).round(0)
-    running["temperature"]   = running["min_temp_c"].fillna(
-                                running["max_temp_c"]).fillna(20).round(1)
+    running["temperature"]   = get_temperature_series(running).fillna(20).round(1)
     running["activity_name"] = running["activity_name"].fillna("Run")
 
     if granularity == "week":
@@ -535,7 +583,7 @@ def get_efficiency_scatter(
 
     running["efficiency"]    = (running["avg_speed_kmh"] / running["avg_hr"] * 1000).round(2)
     running["date"]          = running["start_time_local"].dt.strftime("%Y-%m-%d")
-    running["temperature"]   = running["min_temp_c"].fillna(running["max_temp_c"]).fillna(20).round(1)
+    running["temperature"]   = get_temperature_series(running).fillna(20).round(1)
     running["elevation_gain"]= running["elevation_gain_m"].fillna(0).round(0)
     running["elevation_per_100m"] = (
         running["elevation_gain_m"] / (running["distance_km"] * 10)
@@ -616,7 +664,12 @@ def chat(message: dict):
 
         # Step 2 — execute tool, get real data
         explicit_range = parse_explicit_date_range(user_message)
-        if explicit_range:
+        if (
+            tool_name == "get_activities_by_criteria"
+            or select_tool(user_message) == "get_activities_by_criteria"
+        ):
+            tool_name = "get_activities_by_criteria"
+        elif explicit_range:
             tool_name = "get_activities_by_date_range"
         elif any(
             phrase in user_message.lower()
@@ -673,24 +726,3 @@ def chat(message: dict):
 
     except Exception as e:
         return {"response": "AI coach unavailable: " + str(e)}
-
-# Activity type grouping — parent → children
-ACTIVITY_GROUPS = {
-    "running": ["running", "trail_running", "treadmill_running", "track_running"],
-    "cycling": ["cycling", "road_biking", "indoor_cycling", "mountain_biking",
-                "gravel_cycling", "virtual_ride", "bike"],
-    "strength": ["strength_training", "gym", "fitness_equipment", "weight_training"],
-    "hiking": ["hiking", "walking", "mountaineering"],
-    "swimming": ["swimming", "open_water_swimming", "pool_swimming"],
-    "other": []  # catch-all
-}
-
-def get_parent_type(activity_type: str) -> str:
-    """Maps specific activity type to parent group."""
-    if not activity_type:
-        return "other"
-    at = str(activity_type).lower()
-    for parent, children in ACTIVITY_GROUPS.items():
-        if at in children or at == parent:
-            return parent
-    return activity_type  # keep original if no match

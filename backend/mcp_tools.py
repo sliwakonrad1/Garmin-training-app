@@ -3,6 +3,15 @@ import os
 import re
 from datetime import datetime
 from typing import Callable, Optional, Tuple
+try:
+    from .activity_types import (
+        ACTIVITY_GROUPS,
+        activity_group_statistics,
+        activity_type_mask,
+        get_parent_type,
+    )
+except ImportError:
+    from activity_types import ACTIVITY_GROUPS, activity_group_statistics, activity_type_mask, get_parent_type
 
 # Global dataframe — loaded once at startup, refreshed on demand
 _df = None
@@ -83,6 +92,7 @@ def normalize_activity_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "maxHR": "max_hr",
         "vO2MaxValue": "vo2max",
         "activityTrainingLoad": "training_load",
+        "locationName": "location_name",
     }
     for source, target in alias_map.items():
         if target not in result.columns and source in result.columns:
@@ -321,20 +331,9 @@ def get_vo2max_progress():
 
 
 def get_activity_breakdown():
-    """Returns all-time breakdown by activity type."""
+    """Returns all-time breakdown by aggregate activity group."""
     df, _ = load_data()
-    breakdown = df.groupby("activity_type").agg(
-        sessions=("activity_id", "count"),
-        total_km=("distance_km", "sum"),
-        avg_hr=("avg_hr", "mean"),
-        total_calories=("calories", "sum"),
-        total_load=("training_load", "sum"),
-    ).reset_index()
-    breakdown["total_km"] = breakdown["total_km"].round(1)
-    breakdown["avg_hr"] = breakdown["avg_hr"].round(0)
-    breakdown["total_calories"] = breakdown["total_calories"].astype(int)
-    breakdown["total_load"] = breakdown["total_load"].round(0)
-    return breakdown.sort_values("sessions", ascending=False).to_dict(orient="records")
+    return activity_group_statistics(df)
 
 
 def get_recent_activities(n=10):
@@ -425,6 +424,77 @@ def get_activities_by_date_range(start_date=None, end_date=None):
     }
 
 
+def get_activities_by_criteria(
+    query: str = "",
+    start_date: str = None,
+    end_date: str = None,
+):
+    """Returns activities matching aggregate type, location, and optional date criteria."""
+    df, _ = load_data()
+    data = df.copy()
+    normalized_query = query.lower()
+
+    matched_groups = [
+        group
+        for group, members in ACTIVITY_GROUPS.items()
+        if any(
+            re.search(
+                r"\b" + re.escape(member).replace("_", r"[_\s-]+") + r"\b",
+                normalized_query,
+            )
+            for member in [group, *members]
+        )
+    ]
+    if matched_groups:
+        mask = pd.Series(False, index=data.index)
+        for group in matched_groups:
+            mask |= activity_type_mask(data, group)
+        data = data[mask]
+
+    matched_locations = []
+    if "location_name" in data.columns:
+        locations = data["location_name"].dropna().astype(str).unique()
+        matched_locations = sorted(
+            location
+            for location in locations
+            if location.strip() and location.lower() in normalized_query
+        )
+        if matched_locations:
+            data = data[
+                data["location_name"].astype(str).str.lower().isin(
+                    [location.lower() for location in matched_locations]
+                )
+            ]
+
+    start = pd.to_datetime(start_date, errors="coerce") if start_date else None
+    end = pd.to_datetime(end_date, errors="coerce") if end_date else None
+    if start_date and (start is None or pd.isna(start)):
+        raise ValueError("start_date must be a valid date.")
+    if end_date and (end is None or pd.isna(end)):
+        raise ValueError("end_date must be a valid date.")
+    if start is not None:
+        data = data[data["start_time_local"] >= start]
+    if end is not None:
+        data = data[data["start_time_local"] < end + pd.Timedelta(days=1)]
+
+    return {
+        "matched_activity_groups": matched_groups,
+        "matched_locations": matched_locations,
+        "period": {
+            "start_date": start.strftime("%Y-%m-%d") if start is not None else None,
+            "end_date": end.strftime("%Y-%m-%d") if end is not None else None,
+        },
+        "total_sessions": len(data),
+        "total_km": round(float(data["distance_km"].sum()), 1),
+        "total_minutes": round(float(data["duration_minutes"].sum()), 0),
+        "total_calories": int(data["calories"].sum()),
+        "total_training_load": round(float(data["training_load"].sum()), 0),
+        "activity_groups": activity_group_statistics(data),
+        "activities_returned": min(len(data), 20),
+        "activities": activity_detail_records(data),
+    }
+
+
 def get_personal_bests():
     """Returns personal best performances."""
     df, _ = load_data()
@@ -498,6 +568,10 @@ TOOLS = {
         "fn": get_activities_by_date_range,
         "description": "Use for: a named month or year, a specific date, or an explicit date range"
     },
+    "get_activities_by_criteria": {
+        "fn": get_activities_by_criteria,
+        "description": "Use for: activities by location, region, city, place, aggregate type (running, cycling, strength, hiking, swimming), or combinations with a time period",
+    },
     "get_activities_last_month": {
         "fn": get_activities_last_month,
         "description": "Use for: last month, previous month, monthly stats, past 1 month"
@@ -540,6 +614,14 @@ TOOLS = {
 def select_tool(question: str) -> str:
     """Simple keyword-based tool selector as fallback."""
     q = question.lower()
+    aggregate_types = [
+        "running", "run", "cycling", "cycle", "ride", "strength", "gym",
+        "hiking", "hike", "walking", "swimming", "swim",
+    ]
+    if any(activity_type in q for activity_type in aggregate_types) or re.search(
+        r"\b(?:in|at|near|around)\s+[a-z]", q
+    ):
+        return "get_activities_by_criteria"
     month_names = [
         "january", "february", "march", "april", "may", "june",
         "july", "august", "september", "october", "november", "december",
