@@ -56,6 +56,7 @@ def normalize_activity_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "maxHR": "max_hr",
         "vO2MaxValue": "vo2max",
         "activityTrainingLoad": "training_load",
+        "elevationGain": "elevation_gain_m",
     }
     for source, target in alias_map.items():
         if target not in result.columns and source in result.columns:
@@ -117,6 +118,23 @@ def get_df(force_refresh=False):
         df["calories"]         = pd.to_numeric(df["calories"], errors="coerce").fillna(0)
         df["training_load"]    = pd.to_numeric(df["training_load"], errors="coerce").fillna(0)
         df["vo2max"]           = pd.to_numeric(df["vo2max"], errors="coerce").fillna(0)
+        df["elevation_gain_m"] = pd.to_numeric(df["elevation_gain_m"], errors="coerce").fillna(0)
+        if "weather_temp_mean" in df.columns:
+            df["temperature_c"] = pd.to_numeric(
+                df.get("temperature_c", pd.Series([None] * len(df))), errors="coerce"
+            ).fillna(pd.to_numeric(df["weather_temp_mean"], errors="coerce"))
+        elif "weather_temp_max" in df.columns:
+            df["temperature_c"] = pd.to_numeric(df["weather_temp_max"], errors="coerce")
+        else:
+            df["temperature_c"] = pd.to_numeric(
+                df.get("maxTemperature", pd.Series([None] * len(df))), errors="coerce"
+            )
+
+        if "weather_wind_kmh" in df.columns:
+            df["wind_kmh"] = pd.to_numeric(df["weather_wind_kmh"], errors="coerce")
+        else:
+            df["wind_kmh"] = None
+
         df["activity_group"] = df["activity_type"].apply(get_parent_type)
         weekly_df["week"]                = pd.to_datetime(weekly_df["week"], errors="coerce")
         weekly_df["total_training_load"] = pd.to_numeric(weekly_df["total_training_load"], errors="coerce").fillna(0)
@@ -519,10 +537,14 @@ def get_efficiency_scatter(
     running["date"]          = running["start_time_local"].dt.strftime("%Y-%m-%d")
     running["temperature"]   = running["min_temp_c"].fillna(running["max_temp_c"]).fillna(20).round(1)
     running["elevation_gain"]= running["elevation_gain_m"].fillna(0).round(0)
+    running["elevation_per_100m"] = (
+        running["elevation_gain_m"] / (running["distance_km"] * 10)
+    ).round(1)
     running["activity_name"] = running["activity_name"].fillna("Run")
 
     cols = ["date", "activity_name", "efficiency",
             "distance_km", "avg_hr", "elevation_gain",
+            "elevation_per_100m",
             "temperature", "duration_minutes", "pace_min_per_km",
             "avg_speed_kmh"]
     available = [c for c in cols if c in running.columns]

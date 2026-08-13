@@ -29,6 +29,28 @@ class AiCoachDateParsingTests(unittest.TestCase):
 
 
 class AiCoachDataTests(unittest.TestCase):
+    def test_efficiency_scatter_normalizes_garmin_elevation_gain(self):
+        activities = main.normalize_activity_dataframe(
+            pd.DataFrame(
+                {
+                    "activity_id": [1],
+                    "activity_name": ["Hilly run"],
+                    "activity_type": ["running"],
+                    "start_time_local": pd.to_datetime(["2026-08-05"]),
+                    "distance_km": [10.0],
+                    "avg_hr": [140.0],
+                    "avg_speed_kmh": [12.0],
+                    "elevationGain": [250.0],
+                }
+            )
+        )
+
+        with patch("main.get_df", return_value=(activities, pd.DataFrame())):
+            result = main.get_efficiency_scatter()
+
+        self.assertEqual(result[0]["elevation_gain"], 250.0)
+        self.assertEqual(result[0]["elevation_per_100m"], 2.5)
+
     def test_date_range_tool_uses_configured_backend_loader(self):
         activities = pd.DataFrame(
             {
