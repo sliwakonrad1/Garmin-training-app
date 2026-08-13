@@ -6,22 +6,20 @@ import type { DateRange } from "react-day-picker";
 import {
   Bar,
   BarChart,
+  Cell,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  Activity,
-  Clock,
-  Flame,
-  Gauge,
-  Route as RouteIcon,
-} from "lucide-react";
+import { Activity, Clock, Flame, Gauge, Route as RouteIcon } from "lucide-react";
 
 import { TimeRangeControls } from "@/components/time-range-controls";
 import { Button } from "@/components/ui/button";
@@ -34,13 +32,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   fetchActivityTypes,
+  fetchCardiacDrift,
+  fetchEfficiencyScatter,
+  fetchEfficiencyTrend,
   fetchHrDistribution,
   fetchSummary,
   fetchVo2maxTrend,
   fetchWeekly,
   type DashboardFilters,
+  type CardiacDriftPoint,
+  type EfficiencyScatterPoint,
+  type EfficiencyPoint,
 } from "@/lib/api";
 import type { RelativeUnit } from "@/lib/time-range";
 import {
@@ -56,12 +61,14 @@ export const Route = createFileRoute("/")({
       { title: "Dashboard — Garmin AI Trainer" },
       {
         name: "description",
-        content: "Filtered training KPIs, weekly time by activity, VO2max trend and heart-rate trends.",
+        content:
+          "Filtered training KPIs, weekly time by activity, VO2max trend and heart-rate trends.",
       },
       { property: "og:title", content: "Dashboard — Garmin AI Trainer" },
       {
         property: "og:description",
-        content: "Filtered training KPIs, weekly time by activity, VO2max trend and heart-rate trends.",
+        content:
+          "Filtered training KPIs, weekly time by activity, VO2max trend and heart-rate trends.",
       },
     ],
   }),
@@ -136,11 +143,164 @@ const tooltipStyle = {
   fontSize: 12,
 };
 
+function EfficiencyTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: EfficiencyPoint }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+
+  const point = payload[0].payload;
+
+  return (
+    <div style={tooltipStyle} className="space-y-1 p-3">
+      <p className="font-medium">{point.activity_name}</p>
+      <p>{label}</p>
+      <p>
+        Efficiency:{" "}
+        {formatNumberDynamic(point.efficiency, {
+          maximumFractionDigits: 2,
+          minimumFractionDigits: 2,
+        })}
+      </p>
+      <p>
+        Distance:{" "}
+        {formatNumberDynamic(point.distance_km, {
+          maximumFractionDigits: 1,
+          minimumFractionDigits: 1,
+        })}{" "}
+        km
+      </p>
+      <p>HR: {formatNumberDynamic(point.avg_hr, { maximumFractionDigits: 0 })} bpm</p>
+      <p>
+        Temperature:{" "}
+        {formatNumberDynamic(point.temperature, {
+          maximumFractionDigits: 1,
+          minimumFractionDigits: 1,
+        })}
+        °C
+      </p>
+      <p>
+        Elevation gain: {formatNumberDynamic(point.elevation_gain, { maximumFractionDigits: 0 })} m
+      </p>
+    </div>
+  );
+}
+
+function EfficiencyScatterTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: EfficiencyScatterPoint }>;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+
+  const point = payload[0].payload;
+
+  return (
+    <div style={tooltipStyle} className="space-y-1 p-3">
+      <p className="font-medium">{point.activity_name}</p>
+      <p>{point.date}</p>
+      <p>
+        Efficiency:{" "}
+        {formatNumberDynamic(point.efficiency, {
+          maximumFractionDigits: 2,
+          minimumFractionDigits: 2,
+        })}
+      </p>
+      <p>
+        Distance: {formatNumberDynamic(point.distance_km, { maximumFractionDigits: 1 })} km
+      </p>
+      <p>HR: {formatNumberDynamic(point.avg_hr, { maximumFractionDigits: 0 })} bpm</p>
+      <p>
+        Temperature: {formatNumberDynamic(point.temperature, { maximumFractionDigits: 1 })}°C
+      </p>
+      <p>
+        Elevation gain: {formatNumberDynamic(point.elevation_gain, { maximumFractionDigits: 0 })} m
+      </p>
+    </div>
+  );
+}
+
+type ScatterMetric = "distance_km" | "temperature" | "elevation_gain";
+
+const scatterConfig: Record<ScatterMetric, { label: string; unit: string }> = {
+  distance_km: { label: "Distance", unit: "km" },
+  temperature: { label: "Temperature", unit: "°C" },
+  elevation_gain: { label: "Elevation", unit: "m" },
+};
+
+function interpolateGreen(date: string, oldestDate: string, newestDate: string) {
+  const oldest = new Date(oldestDate).getTime();
+  const newest = new Date(newestDate).getTime();
+  const current = new Date(date).getTime();
+  const ratio = newest === oldest ? 1 : (current - oldest) / (newest - oldest);
+  const from = [187, 247, 208];
+  const to = [34, 197, 94];
+  const color = from.map((channel, index) => Math.round(channel + (to[index] - channel) * ratio));
+  return `rgb(${color.join(", ")})`;
+}
+
+function CardiacDriftTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: CardiacDriftPoint }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+
+  const point = payload[0].payload;
+
+  return (
+    <div style={tooltipStyle} className="space-y-1 p-3">
+      <p className="font-medium">{label}</p>
+      <p>
+        Cardiac drift:{" "}
+        {formatNumberDynamic(point.hr_drift_pct, {
+          maximumFractionDigits: 1,
+          minimumFractionDigits: 1,
+        })}
+        %
+      </p>
+      <p>
+        Duration:{" "}
+        {formatNumberDynamic(point.duration_minutes, {
+          maximumFractionDigits: 0,
+        })}{" "}
+        min
+      </p>
+      <p>
+        Distance:{" "}
+        {formatNumberDynamic(point.distance_km, {
+          maximumFractionDigits: 1,
+          minimumFractionDigits: 1,
+        })}{" "}
+        km
+      </p>
+    </div>
+  );
+}
+
 function Dashboard() {
   const [activityType, setActivityType] = useState("all");
   const [dateRange, setDateRange] = useState<DateRange | undefined>();
   const [relativeValue, setRelativeValue] = useState("");
   const [relativeUnit, setRelativeUnit] = useState<RelativeUnit>("weeks");
+  const [scatterMetric, setScatterMetric] = useState<ScatterMetric>("distance_km");
 
   const filters = useMemo<DashboardFilters>(() => {
     const startDate = dateRange?.from ? format(dateRange.from, "yyyy-MM-dd") : undefined;
@@ -178,6 +338,18 @@ function Dashboard() {
   const vo2 = useQuery({
     queryKey: ["vo2max_trend", ...queryScope],
     queryFn: () => fetchVo2maxTrend(filters),
+  });
+  const efficiency = useQuery({
+    queryKey: ["efficiency_trend", ...queryScope],
+    queryFn: () => fetchEfficiencyTrend(filters),
+  });
+  const efficiencyScatter = useQuery({
+    queryKey: ["efficiency_scatter", ...queryScope],
+    queryFn: () => fetchEfficiencyScatter(filters),
+  });
+  const cardiacDrift = useQuery({
+    queryKey: ["cardiac_drift", ...queryScope],
+    queryFn: () => fetchCardiacDrift(filters),
   });
   const hrDistribution = useQuery({
     queryKey: ["hr_distribution", ...queryScope],
@@ -225,6 +397,48 @@ function Dashboard() {
       String(left.date).localeCompare(String(right.date)),
     );
   }, [hrDistribution.data]);
+  const efficiencySeries = useMemo(
+    () => [...(efficiency.data ?? [])].sort((left, right) => left.date.localeCompare(right.date)),
+    [efficiency.data],
+  );
+  const scatterSeries = useMemo(() => {
+    const points = [...(efficiencyScatter.data ?? [])].sort(
+      (left, right) => left[scatterMetric] - right[scatterMetric],
+    );
+    if (points.length < 2) {
+      return points.map((point) => ({ ...point, trend: point.efficiency }));
+    }
+
+    const count = points.length;
+    const averageX = points.reduce((sum, point) => sum + point[scatterMetric], 0) / count;
+    const averageY = points.reduce((sum, point) => sum + point.efficiency, 0) / count;
+    const denominator = points.reduce(
+      (sum, point) => sum + (point[scatterMetric] - averageX) ** 2,
+      0,
+    );
+    const slope =
+      denominator === 0
+        ? 0
+        : points.reduce(
+            (sum, point) =>
+              sum + (point[scatterMetric] - averageX) * (point.efficiency - averageY),
+            0,
+          ) / denominator;
+    const intercept = averageY - slope * averageX;
+
+    return points.map((point) => ({
+      ...point,
+      trend: slope * point[scatterMetric] + intercept,
+    }));
+  }, [efficiencyScatter.data, scatterMetric]);
+  const scatterDateRange = useMemo(() => {
+    const dates = (efficiencyScatter.data ?? []).map((point) => point.date).sort();
+    return { oldest: dates[0] ?? "", newest: dates[dates.length - 1] ?? "" };
+  }, [efficiencyScatter.data]);
+  const cardiacDriftSeries = useMemo(
+    () => [...(cardiacDrift.data ?? [])].sort((left, right) => left.date.localeCompare(right.date)),
+    [cardiacDrift.data],
+  );
   const hasActiveFilters = Boolean(filters.activityType || filters.startDate || filters.endDate);
 
   const clearFilters = () => {
@@ -274,7 +488,11 @@ function Dashboard() {
             setRelativeUnit={setRelativeUnit}
           />
 
-          <Button variant="ghost" onClick={clearFilters} disabled={!hasActiveFilters && !relativeValue}>
+          <Button
+            variant="ghost"
+            onClick={clearFilters}
+            disabled={!hasActiveFilters && !relativeValue}
+          >
             Clear filters
           </Button>
         </CardContent>
@@ -339,7 +557,13 @@ function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={weeklySeries}>
                   <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
-                  <XAxis dataKey="week" stroke={AXIS_COLOR} fontSize={12} tickLine={false} axisLine={false} />
+                  <XAxis
+                    dataKey="week"
+                    stroke={AXIS_COLOR}
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                  />
                   <YAxis
                     stroke={AXIS_COLOR}
                     fontSize={12}
@@ -390,8 +614,20 @@ function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={vo2.data ?? []}>
                   <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
-                  <XAxis dataKey="date" stroke={AXIS_COLOR} fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis stroke={AXIS_COLOR} fontSize={12} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
+                  <XAxis
+                    dataKey="date"
+                    stroke={AXIS_COLOR}
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    stroke={AXIS_COLOR}
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                    domain={["auto", "auto"]}
+                  />
                   <Tooltip
                     contentStyle={tooltipStyle}
                     formatter={(value: number) => [
@@ -420,6 +656,177 @@ function Dashboard() {
 
       <Card className="border-border/60 bg-card">
         <CardHeader>
+          <CardTitle className="text-base">Running Efficiency per Session</CardTitle>
+          <p className="text-sm text-muted-foreground">higher = better form</p>
+        </CardHeader>
+        <CardContent className="h-[300px]">
+          {efficiency.isLoading ? (
+            <Skeleton className="h-full w-full" />
+          ) : efficiencySeries.length === 0 ? (
+            <EmptyChartState />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={efficiencySeries}>
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={["auto", "auto"]}
+                />
+                <Tooltip content={<EfficiencyTooltip />} />
+                <Line
+                  type="monotone"
+                  dataKey="efficiency"
+                  stroke={GREEN}
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: GREEN }}
+                  activeDot={{ r: 5 }}
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/60 bg-card">
+        <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="text-base">Efficiency vs Conditions</CardTitle>
+            <p className="text-sm text-muted-foreground">newer sessions use brighter green</p>
+          </div>
+          <Tabs
+            value={scatterMetric}
+            onValueChange={(value) => setScatterMetric(value as ScatterMetric)}
+          >
+            <TabsList>
+              <TabsTrigger value="distance_km">Distance</TabsTrigger>
+              <TabsTrigger value="temperature">Temperature</TabsTrigger>
+              <TabsTrigger value="elevation_gain">Elevation</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </CardHeader>
+        <CardContent className="h-[340px]">
+          {efficiencyScatter.isLoading ? (
+            <Skeleton className="h-full w-full" />
+          ) : scatterSeries.length === 0 ? (
+            <EmptyChartState />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={scatterSeries}>
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                <XAxis
+                  type="number"
+                  dataKey={scatterMetric}
+                  name={scatterConfig[scatterMetric].label}
+                  unit={scatterConfig[scatterMetric].unit}
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={["auto", "auto"]}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="efficiency"
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={["auto", "auto"]}
+                />
+                <Tooltip content={<EfficiencyScatterTooltip />} />
+                <Scatter dataKey="efficiency" fill={GREEN}>
+                  {scatterSeries.map((point) => (
+                    <Cell
+                      key={`${point.date}-${point.activity_name}-${point.efficiency}`}
+                      fill={interpolateGreen(point.date, scatterDateRange.oldest, scatterDateRange.newest)}
+                    />
+                  ))}
+                </Scatter>
+                <Line
+                  type="linear"
+                  dataKey="trend"
+                  stroke="#f8fafc"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={false}
+                  isAnimationActive={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/60 bg-card">
+        <CardHeader>
+          <CardTitle className="text-base">Cardiac Drift Trend</CardTitle>
+          <p className="text-sm text-muted-foreground">lower = better aerobic endurance</p>
+        </CardHeader>
+        <CardContent className="h-[300px]">
+          {cardiacDrift.isLoading ? (
+            <Skeleton className="h-full w-full" />
+          ) : cardiacDriftSeries.length === 0 ? (
+            <EmptyChartState />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={cardiacDriftSeries}>
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={["auto", "auto"]}
+                  tickFormatter={(value) => `${value}%`}
+                />
+                <Tooltip content={<CardiacDriftTooltip />} />
+                <ReferenceLine
+                  y={5}
+                  stroke={GREEN}
+                  strokeDasharray="3 3"
+                  label={{ value: "Good zone: 5%", fill: GREEN, fontSize: 12 }}
+                />
+                <ReferenceLine
+                  y={8}
+                  stroke="#ef4444"
+                  strokeDasharray="3 3"
+                  label={{ value: "Needs work: 8%", fill: "#ef4444", fontSize: 12 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="hr_drift_pct"
+                  stroke={GREEN}
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: GREEN }}
+                  activeDot={{ r: 5 }}
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/60 bg-card">
+        <CardHeader>
           <CardTitle className="text-base">Average HR by activity type</CardTitle>
         </CardHeader>
         <CardContent className="h-[300px]">
@@ -431,7 +838,13 @@ function Dashboard() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={hrSeries}>
                 <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
-                <XAxis dataKey="date" stroke={AXIS_COLOR} fontSize={12} tickLine={false} axisLine={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke={AXIS_COLOR}
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                />
                 <YAxis
                   stroke={AXIS_COLOR}
                   fontSize={12}
